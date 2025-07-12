@@ -2,9 +2,9 @@ server:
   port: 1016
 datasource:
   driverName: mysql
-  host: 127.0.0.1
+  host: 118.25.157.30
   port: 3306
   database: demo
-  username: root
+  username: remote_user
   password: 123456
   charset: utf8
