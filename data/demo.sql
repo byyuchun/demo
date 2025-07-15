@@ -81,7 +81,8 @@ CREATE TABLE h1_attendance (
                                makeup_schedule_id BIGINT NULL,
                                FOREIGN KEY (schedule_id) REFERENCES h1_schedule(id),
                                FOREIGN KEY (student_id) REFERENCES h1_student(id),
-                               FOREIGN KEY (makeup_schedule_id) REFERENCES h1_schedule(id)
+                               FOREIGN KEY (makeup_schedule_id) REFERENCES h1_schedule(id),
+                               UNIQUE KEY unique_student_schedule (schedule_id, student_id)
 ) DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci;
 

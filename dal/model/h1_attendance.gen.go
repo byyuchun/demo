@@ -17,7 +17,7 @@ type H1Attendance struct {
 	StudentID        int64     `gorm:"column:student_id;not null" json:"student_id"`
 	CheckedAt        time.Time `gorm:"column:checked_at" json:"checked_at"`
 	Status           string    `gorm:"column:status;not null" json:"status"`
-	MakeupScheduleID *int64    `gorm:"column:makeup_schedule_id" json:"makeup_schedule_id"`
+	MakeupScheduleID int64     `gorm:"column:makeup_schedule_id" json:"makeup_schedule_id"`
 }
 
 // TableName H1Attendance's table name

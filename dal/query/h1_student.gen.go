@@ -7,6 +7,7 @@ package query
 import (
 	"context"
 	"database/sql"
+	"demo/dal/model"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -16,8 +17,6 @@ import (
 	"gorm.io/gen/field"
 
 	"gorm.io/plugin/dbresolver"
-
-	"demo/dal/model"
 )
 
 func newH1Student(db *gorm.DB, opts ...gen.DOOption) h1Student {

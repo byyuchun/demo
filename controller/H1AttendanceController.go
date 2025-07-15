@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"demo/common"
 	"demo/dal/model"
 	"demo/dal/query"
 	"demo/dto"
@@ -11,6 +12,105 @@ import (
 	"strconv"
 	"time"
 )
+
+// createOrUpdateAttendance 创建或更新考勤记录的通用函数
+// 确保一个学生对一个课表只有一个考勤记录
+func createOrUpdateAttendance(scheduleID, studentID int64, status string, makeupScheduleID *int64) (*model.H1Attendance, error) {
+	db := common.GetDB()
+
+	println("=== createOrUpdateAttendance 调试信息 ===")
+	println("scheduleID:", scheduleID, "studentID:", studentID, "status:", status)
+
+	var resultAttendance *model.H1Attendance
+
+	// 检查是否已存在考勤记录
+	existingAttendance, err := query.H1Attendance.WithContext(context.Background()).
+		Where(query.H1Attendance.ScheduleID.Eq(scheduleID)).
+		Where(query.H1Attendance.StudentID.Eq(studentID)).
+		First()
+
+	if err != nil {
+		println("记录不存在，准备创建新记录，错误信息:", err.Error())
+		// 不存在考勤记录，创建新记录
+		newAttendance := model.H1Attendance{
+			ScheduleID: scheduleID,
+			StudentID:  studentID,
+			CheckedAt:  time.Now(),
+			Status:     status,
+		}
+
+		// 如果有补课安排，设置MakeupScheduleID
+		if makeupScheduleID != nil {
+			newAttendance.MakeupScheduleID = *makeupScheduleID
+			println("创建记录（包含补课信息）")
+			if err := db.Create(&newAttendance).Error; err != nil {
+				println("创建失败:", err.Error())
+				return nil, err
+			}
+		} else {
+			println("创建记录（忽略补课字段）")
+			// 没有补课安排，忽略MakeupScheduleID字段（保持NULL）
+			if err := db.Omit("makeup_schedule_id").Create(&newAttendance).Error; err != nil {
+				println("创建失败:", err.Error())
+				return nil, err
+			}
+		}
+		println("创建成功，记录ID:", newAttendance.ID)
+		resultAttendance = &newAttendance
+	} else {
+		println("记录已存在，准备更新，现有记录ID:", existingAttendance.ID, "当前状态:", existingAttendance.Status)
+		// 已存在考勤记录，更新状态
+		updateData := map[string]interface{}{
+			"status":     status,
+			"checked_at": time.Now(),
+		}
+
+		if makeupScheduleID != nil {
+			updateData["makeup_schedule_id"] = *makeupScheduleID
+			println("更新记录（包含补课信息）")
+		} else {
+			// 清除补课安排，设置为NULL
+			updateData["makeup_schedule_id"] = nil
+			println("更新记录（清除补课信息）")
+		}
+
+		// 使用Updates方法更新字段，包括NULL值
+		if err := db.Model(existingAttendance).Updates(updateData).Error; err != nil {
+			println("更新失败:", err.Error())
+			return nil, err
+		}
+
+		println("更新成功")
+		// 重新查询更新后的记录
+		updatedAttendance, err := query.H1Attendance.WithContext(context.Background()).
+			Where(query.H1Attendance.ID.Eq(existingAttendance.ID)).
+			First()
+		if err != nil {
+			println("重新查询失败:", err.Error())
+			return nil, err
+		}
+
+		resultAttendance = updatedAttendance
+	}
+
+	// 考勤操作完成后，自动更新学生账单
+	// 需要先获取课表信息来得到教学班ID
+	schedule, err := query.H1Schedule.WithContext(context.Background()).Where(query.H1Schedule.ID.Eq(scheduleID)).First()
+	if err != nil {
+		println("获取课表信息失败，跳过账单更新:", err.Error())
+		// 不返回错误，因为考勤记录已经成功处理
+	} else {
+		println("开始更新账单...")
+		if err := updateStudentBill(studentID, schedule.ClassCourseID); err != nil {
+			println("账单更新失败:", err.Error())
+			// 不返回错误，因为考勤记录已经成功处理
+		} else {
+			println("账单更新成功")
+		}
+	}
+
+	return resultAttendance, nil
+}
 
 // CreateAttendance godoc
 // @Summary      Create a new attendance record
@@ -28,20 +128,14 @@ func CreateAttendance(ctx *gin.Context) {
 		return
 	}
 
-	attendance := model.H1Attendance{
-		ScheduleID:       req.ScheduleID,
-		StudentID:        req.StudentID,
-		CheckedAt:        time.Now(),
-		Status:           req.Status,
-		MakeupScheduleID: req.MakeupScheduleID, // 现在是指针类型，可以正确处理 nil
-	}
-
-	if err := query.H1Attendance.WithContext(context.Background()).Create(&attendance); err != nil {
-		response.Fail(ctx, http.StatusInternalServerError, "创建失败")
+	// 使用通用的创建或更新函数，确保一个学生对一个课表只有一个考勤记录
+	attendance, err := createOrUpdateAttendance(req.ScheduleID, req.StudentID, req.Status, req.MakeupScheduleID)
+	if err != nil {
+		response.Fail(ctx, http.StatusInternalServerError, "操作失败")
 		return
 	}
 
-	response.Success(ctx, attendance, "创建成功")
+	response.Success(ctx, *attendance, "操作成功")
 }
 
 // GetAttendance godoc
@@ -70,8 +164,8 @@ func GetAttendance(ctx *gin.Context) {
 }
 
 // DeleteAttendance godoc
-// @Summary      Delete an attendance by ID
-// @Description  Delete an attendance by ID
+// @Summary      Delete an attendance record
+// @Description  Delete an attendance record
 // @Tags         H1Attendance
 // @Produce      json
 // @Param        id   path      int  true  "Attendance ID"
@@ -85,10 +179,35 @@ func DeleteAttendance(ctx *gin.Context) {
 		return
 	}
 
+	// 在删除前先获取考勤记录信息，用于后续的账单更新
+	attendance, err := query.H1Attendance.WithContext(context.Background()).Where(query.H1Attendance.ID.Eq(id)).First()
+	if err != nil {
+		response.Fail(ctx, http.StatusNotFound, "考勤记录不存在")
+		return
+	}
+
+	// 获取课表信息，用于账单更新
+	schedule, err := query.H1Schedule.WithContext(context.Background()).Where(query.H1Schedule.ID.Eq(attendance.ScheduleID)).First()
+	if err != nil {
+		response.Fail(ctx, http.StatusInternalServerError, "获取课表信息失败")
+		return
+	}
+
+	// 删除考勤记录
 	_, err = query.H1Attendance.WithContext(context.Background()).Where(query.H1Attendance.ID.Eq(id)).Delete()
 	if err != nil {
 		response.Fail(ctx, http.StatusInternalServerError, "删除失败")
 		return
+	}
+
+	// 删除成功后，更新学生账单
+	println("=== 删除考勤记录后更新账单 ===")
+	println("学生ID:", attendance.StudentID, "教学班ID:", schedule.ClassCourseID)
+	if err := updateStudentBill(attendance.StudentID, schedule.ClassCourseID); err != nil {
+		println("账单更新失败:", err.Error())
+		// 不返回错误，因为删除操作已经成功
+	} else {
+		println("账单更新成功")
 	}
 
 	response.Success(ctx, nil, "删除成功")
@@ -129,12 +248,28 @@ func UpdateAttendance(ctx *gin.Context) {
 		attendance.Status = req.Status
 	}
 	if req.MakeupScheduleID != nil {
-		attendance.MakeupScheduleID = req.MakeupScheduleID
+		attendance.MakeupScheduleID = *req.MakeupScheduleID
 	}
 
 	if err := query.H1Attendance.WithContext(context.Background()).Save(attendance); err != nil {
 		response.Fail(ctx, http.StatusInternalServerError, "更新失败")
 		return
+	}
+
+	// 更新成功后，自动更新学生账单
+	// 获取课表信息
+	schedule, err := query.H1Schedule.WithContext(context.Background()).Where(query.H1Schedule.ID.Eq(attendance.ScheduleID)).First()
+	if err != nil {
+		println("获取课表信息失败，跳过账单更新:", err.Error())
+	} else {
+		println("=== UpdateAttendance 更新账单 ===")
+		println("学生ID:", attendance.StudentID, "教学班ID:", schedule.ClassCourseID)
+		if err := updateStudentBill(attendance.StudentID, schedule.ClassCourseID); err != nil {
+			println("账单更新失败:", err.Error())
+			// 不返回错误，因为更新操作已经成功
+		} else {
+			println("账单更新成功")
+		}
 	}
 
 	response.Success(ctx, attendance, "更新成功")
@@ -224,13 +359,19 @@ func GetAllAttendances(ctx *gin.Context) {
 		course, _ := query.H1Course.WithContext(context.Background()).
 			Where(query.H1Course.ID.Eq(classCourse.CourseID)).First()
 
+		// 处理MakeupScheduleID类型转换
+		var makeupScheduleIDPtr *int64
+		if attendance.MakeupScheduleID != 0 {
+			makeupScheduleIDPtr = &attendance.MakeupScheduleID
+		}
+
 		detail := dto.AttendanceWithDetails{
 			ID:               attendance.ID,
 			ScheduleID:       attendance.ScheduleID,
 			StudentID:        attendance.StudentID,
 			CheckedAt:        attendance.CheckedAt,
 			Status:           attendance.Status,
-			MakeupScheduleID: attendance.MakeupScheduleID,
+			MakeupScheduleID: makeupScheduleIDPtr,
 			ScheduleDate:     schedule.Date,
 			StartTime:        schedule.StartTime,
 			EndTime:          schedule.EndTime,
@@ -287,37 +428,14 @@ func CheckIn(ctx *gin.Context) {
 		return
 	}
 
-	// 检查是否已经打卡
-	existingAttendance, _ := query.H1Attendance.WithContext(context.Background()).
-		Where(query.H1Attendance.ScheduleID.Eq(req.ScheduleID)).
-		Where(query.H1Attendance.StudentID.Eq(req.StudentID)).
-		First()
-	if existingAttendance != nil {
-		response.Fail(ctx, http.StatusBadRequest, "已经打过卡了")
-		return
-	}
-
-	// 创建出勤记录
-	attendance := model.H1Attendance{
-		ScheduleID: req.ScheduleID,
-		StudentID:  req.StudentID,
-		CheckedAt:  time.Now(),
-		Status:     "出勤", // 正常出勤
-	}
-
-	if err := query.H1Attendance.WithContext(context.Background()).Create(&attendance); err != nil {
+	// 创建或更新考勤记录为出勤状态
+	attendance, err := createOrUpdateAttendance(req.ScheduleID, req.StudentID, "出勤", nil)
+	if err != nil {
 		response.Fail(ctx, http.StatusInternalServerError, "打卡失败")
 		return
 	}
 
-	// 签到成功后，自动处理账单
-	if err := updateStudentBill(req.StudentID, schedule.ClassCourseID); err != nil {
-		// 账单更新失败，记录错误但不影响签到结果
-		// 在实际应用中应该使用日志系统
-		println("账单更新失败:", err.Error())
-	}
-
-	response.Success(ctx, attendance, "打卡成功")
+	response.Success(ctx, *attendance, "打卡成功")
 }
 
 // updateStudentBill 更新学生账单
@@ -357,7 +475,7 @@ func updateStudentBill(studentID int64, classCourseID int64) error {
 			SemesterID:  classCourse.SemesterID,
 			TotalFee:    totalFee,
 			FinalizedAt: time.Now(),
-			Status:      "待支付",
+			Status:      "未结算",
 		}
 		println("创建新账单，学生ID:", studentID, "学期ID:", classCourse.SemesterID, "费用:", totalFee)
 		err = query.H1StudentSemesterBill.WithContext(context.Background()).Create(&newBill)
@@ -492,7 +610,7 @@ func ApplyMakeup(ctx *gin.Context) {
 	if existingAttendance != nil {
 		// 更新现有记录为补签
 		existingAttendance.Status = "补签"
-		existingAttendance.MakeupScheduleID = &req.MakeupScheduleID
+		existingAttendance.MakeupScheduleID = req.MakeupScheduleID
 		existingAttendance.CheckedAt = time.Now()
 
 		if err := query.H1Attendance.WithContext(context.Background()).Save(existingAttendance); err != nil {
@@ -514,7 +632,7 @@ func ApplyMakeup(ctx *gin.Context) {
 			StudentID:        req.StudentID,
 			CheckedAt:        time.Now(),
 			Status:           "补签",
-			MakeupScheduleID: &req.MakeupScheduleID,
+			MakeupScheduleID: req.MakeupScheduleID,
 		}
 
 		if err := query.H1Attendance.WithContext(context.Background()).Create(&attendance); err != nil {
@@ -599,13 +717,19 @@ func GetStudentAttendance(ctx *gin.Context) {
 		// 获取课程信息
 		course, _ := query.H1Course.WithContext(context.Background()).Where(query.H1Course.ID.Eq(classCourse.CourseID)).First()
 
+		// 处理MakeupScheduleID类型转换
+		var makeupScheduleIDPtr *int64
+		if attendance.MakeupScheduleID != 0 {
+			makeupScheduleIDPtr = &attendance.MakeupScheduleID
+		}
+
 		detail := dto.AttendanceWithDetails{
 			ID:               attendance.ID,
 			ScheduleID:       attendance.ScheduleID,
 			StudentID:        attendance.StudentID,
 			CheckedAt:        attendance.CheckedAt,
 			Status:           attendance.Status,
-			MakeupScheduleID: attendance.MakeupScheduleID,
+			MakeupScheduleID: makeupScheduleIDPtr,
 			ScheduleDate:     schedule.Date,
 			StartTime:        schedule.StartTime,
 			EndTime:          schedule.EndTime,
@@ -634,53 +758,14 @@ func AdminMakeup(ctx *gin.Context) {
 		return
 	}
 
-	// 检查是否已存在考勤记录
-	existingAttendance, err := query.H1Attendance.WithContext(context.Background()).
-		Where(query.H1Attendance.ScheduleID.Eq(req.ScheduleID)).
-		Where(query.H1Attendance.StudentID.Eq(req.StudentID)).
-		First()
-
+	// 创建或更新考勤记录为补签状态
+	attendance, err := createOrUpdateAttendance(req.ScheduleID, req.StudentID, "补签", req.MakeupScheduleID)
 	if err != nil {
-		// 不存在考勤记录，创建新的补签记录
-		attendance := model.H1Attendance{
-			ScheduleID:       req.ScheduleID,
-			StudentID:        req.StudentID,
-			CheckedAt:        time.Now(),
-			Status:           "补签",
-			MakeupScheduleID: req.MakeupScheduleID,
-		}
-
-		if err := query.H1Attendance.WithContext(context.Background()).Create(&attendance); err != nil {
-			response.Fail(ctx, http.StatusInternalServerError, "补签失败")
-			return
-		}
-
-		// 补签成功后，更新账单
-		schedule, _ := query.H1Schedule.WithContext(context.Background()).Where(query.H1Schedule.ID.Eq(req.ScheduleID)).First()
-		if schedule != nil {
-			updateStudentBill(req.StudentID, schedule.ClassCourseID)
-		}
-
-		response.Success(ctx, attendance, "补签成功")
-	} else {
-		// 已存在考勤记录，更新为补签状态
-		existingAttendance.Status = "补签"
-		existingAttendance.MakeupScheduleID = req.MakeupScheduleID
-		existingAttendance.CheckedAt = time.Now()
-
-		if err := query.H1Attendance.WithContext(context.Background()).Save(existingAttendance); err != nil {
-			response.Fail(ctx, http.StatusInternalServerError, "补签失败")
-			return
-		}
-
-		// 补签成功后，更新账单
-		schedule, _ := query.H1Schedule.WithContext(context.Background()).Where(query.H1Schedule.ID.Eq(req.ScheduleID)).First()
-		if schedule != nil {
-			updateStudentBill(req.StudentID, schedule.ClassCourseID)
-		}
-
-		response.Success(ctx, existingAttendance, "补签成功")
+		response.Fail(ctx, http.StatusInternalServerError, "补签失败")
+		return
 	}
+
+	response.Success(ctx, *attendance, "补签成功")
 }
 
 // MarkAbsent 标记缺勤
@@ -699,53 +784,12 @@ func MarkAbsent(ctx *gin.Context) {
 		return
 	}
 
-	// 验证状态是否有效
-	if req.Status != "请假" && req.Status != "旷课" {
-		response.Fail(ctx, http.StatusBadRequest, "状态只能是'请假'或'旷课'")
+	// 创建或更新考勤记录为指定状态（请假或旷课）
+	attendance, err := createOrUpdateAttendance(req.ScheduleID, req.StudentID, req.Status, nil)
+	if err != nil {
+		response.Fail(ctx, http.StatusInternalServerError, "标记失败")
 		return
 	}
 
-	// 检查是否已有出勤记录
-	existingAttendance, _ := query.H1Attendance.WithContext(context.Background()).
-		Where(query.H1Attendance.ScheduleID.Eq(req.ScheduleID)).
-		Where(query.H1Attendance.StudentID.Eq(req.StudentID)).
-		First()
-
-	if existingAttendance != nil {
-		// 更新现有记录
-		existingAttendance.Status = req.Status
-		if err := query.H1Attendance.WithContext(context.Background()).Save(existingAttendance); err != nil {
-			response.Fail(ctx, http.StatusInternalServerError, "更新失败")
-			return
-		}
-
-		// 状态变更后，更新账单
-		schedule, _ := query.H1Schedule.WithContext(context.Background()).Where(query.H1Schedule.ID.Eq(req.ScheduleID)).First()
-		if schedule != nil {
-			updateStudentBill(req.StudentID, schedule.ClassCourseID)
-		}
-
-		response.Success(ctx, existingAttendance, "标记成功")
-	} else {
-		// 创建新记录
-		attendance := model.H1Attendance{
-			ScheduleID: req.ScheduleID,
-			StudentID:  req.StudentID,
-			CheckedAt:  time.Now(),
-			Status:     req.Status,
-		}
-
-		if err := query.H1Attendance.WithContext(context.Background()).Create(&attendance); err != nil {
-			response.Fail(ctx, http.StatusInternalServerError, "标记失败")
-			return
-		}
-
-		// 标记完成后，更新账单
-		schedule, _ := query.H1Schedule.WithContext(context.Background()).Where(query.H1Schedule.ID.Eq(req.ScheduleID)).First()
-		if schedule != nil {
-			updateStudentBill(req.StudentID, schedule.ClassCourseID)
-		}
-
-		response.Success(ctx, attendance, "标记成功")
-	}
+	response.Success(ctx, *attendance, "标记成功")
 }
