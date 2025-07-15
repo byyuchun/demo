@@ -114,3 +114,20 @@ func UpdateCourse(ctx *gin.Context) {
 
 	response.Success(ctx, course, "更新成功")
 }
+
+// GetAllCourses godoc
+// @Summary      Get all courses
+// @Description  Get all courses
+// @Tags         H1Course
+// @Produce      json
+// @Success      200  {object}  response.Response{data=[]model.H1Course}
+// @Router       /h1/course [get]
+func GetAllCourses(ctx *gin.Context) {
+	courses, err := query.H1Course.WithContext(context.Background()).Find()
+	if err != nil {
+		response.Fail(ctx, http.StatusInternalServerError, "查询失败")
+		return
+	}
+
+	response.Success(ctx, courses, "查询成功")
+}

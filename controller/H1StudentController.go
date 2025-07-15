@@ -7,6 +7,7 @@ import (
 	"demo/dto"
 	"demo/response"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gen/field"
 	"net/http"
 	"strconv"
 )
@@ -60,6 +61,29 @@ func GetStudent(ctx *gin.Context) {
 	}
 
 	response.Success(ctx, student, "查询成功")
+}
+
+func GetAllStudents(ctx *gin.Context) {
+	keyword := ctx.Query("keyword")
+
+	q := query.H1Student.WithContext(context.Background())
+
+	if keyword != "" {
+		q = q.Where(
+			field.Or(
+				query.H1Student.Name.Like("%"+keyword+"%"),
+				query.H1Student.Contact.Like("%"+keyword+"%"),
+			),
+		)
+	}
+
+	students, err := q.Find()
+	if err != nil {
+		response.Fail(ctx, http.StatusInternalServerError, "查询失败")
+		return
+	}
+
+	response.Success(ctx, students, "查询成功")
 }
 
 // DeleteStudent godoc
@@ -122,3 +146,20 @@ func UpdateStudent(ctx *gin.Context) {
 
 	response.Success(ctx, student, "更新成功")
 }
+
+// GetAllStudents godoc
+// @Summary      Get all students
+// @Description  Get all students
+// @Tags         H1Student
+// @Produce      json
+// @Success      200  {object}  response.Response{data=[]model.H1Student}
+// @Router       /h1/student [get]
+//func GetAllStudents(ctx *gin.Context) {
+//	students, err := query.H1Student.WithContext(context.Background()).Find()
+//	if err != nil {
+//		response.Fail(ctx, http.StatusInternalServerError, "查询失败")
+//		return
+//	}
+//
+//	response.Success(ctx, students, "查询成功")
+//}

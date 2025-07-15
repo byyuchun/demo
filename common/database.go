@@ -39,6 +39,17 @@ func InitDB() *gorm.DB {
 	db.AutoMigrate(&model.Class{})
 	db.AutoMigrate(&model.Major{})
 
+	// 自动迁移H1表
+	//db.AutoMigrate(&dalmodel.H1Student{})
+	//db.AutoMigrate(&dalmodel.H1Semester{})
+	//db.AutoMigrate(&dalmodel.H1Course{})
+	//db.AutoMigrate(&dalmodel.H1Class{})
+	//db.AutoMigrate(&dalmodel.H1ClassCourse{})
+	//db.AutoMigrate(&dalmodel.H1Enrollment{})
+	//db.AutoMigrate(&dalmodel.H1Schedule{})
+	//db.AutoMigrate(&dalmodel.H1Attendance{})
+	//db.AutoMigrate(&dalmodel.H1StudentSemesterBill{})
+
 	DB = db
 	return db
 }

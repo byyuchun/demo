@@ -2,6 +2,7 @@ package main
 
 import (
 	"demo/common"
+	"demo/dal/query"
 	"demo/routes"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
@@ -15,6 +16,9 @@ func main() {
 		sqlDb, _ := db.DB()
 		sqlDb.Close()
 	}()
+
+	// 初始化查询对象
+	query.SetDefault(db)
 
 	r := gin.Default()
 	r = routes.CollectRoute(r)

@@ -122,3 +122,20 @@ func UpdateSemester(ctx *gin.Context) {
 
 	response.Success(ctx, semester, "更新成功")
 }
+
+// GetAllSemesters godoc
+// @Summary      Get all semesters
+// @Description  Get all semesters
+// @Tags         H1Semester
+// @Produce      json
+// @Success      200  {object}  response.Response{data=[]model.H1Semester}
+// @Router       /h1/semester [get]
+func GetAllSemesters(ctx *gin.Context) {
+	semesters, err := query.H1Semester.WithContext(context.Background()).Find()
+	if err != nil {
+		response.Fail(ctx, http.StatusInternalServerError, "查询失败")
+		return
+	}
+
+	response.Success(ctx, semesters, "查询成功")
+}

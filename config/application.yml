@@ -1,5 +1,5 @@
 server:
-  port: 1016
+  port: 9090
 datasource:
   driverName: mysql
   host: 118.25.157.30
